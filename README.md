@@ -36,7 +36,7 @@ View all traces for a selected path with timestamp, duration, status, and direct
 ### Distributed Tracing Integration
 Click on any trace to open it directly in Dynatrace Distributed Tracing for detailed span analysis.
 
-![Distributed Tracing](docs/images/distributed-tracing.png)
+![Distributed Tracing](docs/images/distributed-tracing.png) 
 
 ## Required Permissions
 
@@ -46,9 +46,8 @@ The app requires the following scopes to be configured in your Dynatrace environ
 |-------|-------------|
 | `storage:spans:read` | Read distributed traces and span data |
 | `storage:entities:read` | Read service entities and tags |
-| `storage:logs:read` | Read log data |
 | `storage:buckets:read` | Access storage buckets |
-| `storage:metrics:read` | Read metrics data |
+
 
 ## Available Scripts in Dynatrace AppEngine
 
