@@ -1,7 +1,7 @@
 {
   "name": "traces-flow",
-  "version": "0.0.0",
-  "description": "A starting project with routing, fetching data, and charting",
+  "version": "0.1.0",
+  "description": "Search traces for specific services and flows",
   "scripts": {
     "build": "dt-app build",
     "start": "dt-app dev",
@@ -17,7 +17,7 @@
   "engines": {
     "node": ">=16.13.0"
   },
-  "author": "",
+  "author": "Pablo Vellido - ROE SE",
   "license": "ISC",
   "dependencies": {
     "@dynatrace-sdk/app-environment": "^1.1.4",
