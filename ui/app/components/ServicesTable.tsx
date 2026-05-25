@@ -18,79 +18,48 @@ interface ServicesTableProps {
 export interface ServiceData {
   serviceName: string;
   serviceId: string;
-  requestCount: number;
-  errorRate: number;
-  avgDuration: number;
-  technology: string | null;
+  k8sCluster: string | null;
   k8sNamespace: string | null;
+  k8sWorkload: string | null;
+  tags: string | null;
 }
 
 export const ServicesTable: React.FC<ServicesTableProps> = ({
   filters,
   onViewTracesFlow,
 }) => {
-  // Build timeframe for DQL - use expression format when available
-  const getTimeframeParam = () => {
-    if (!filters.timeframe) return "";
-    if (filters.timeframe.from.type === "expression") {
-      return `, from: ${filters.timeframe.from.value}, to: ${filters.timeframe.to.value}`;
-    }
-    return `, from: timestamp("${filters.timeframe.from.absoluteDate}"), to: timestamp("${filters.timeframe.to.absoluteDate}")`;
-  };
-  
-  const timeframeClause = getTimeframeParam();
-
-  // Build filter conditions
-  const conditions: string[] = [];
+  // Build entity filter conditions
+  const filterConditions: string[] = [];
 
   if (filters.k8sCluster) {
-    conditions.push(`k8s.cluster.name == "${filters.k8sCluster}"`);
+    filterConditions.push(`| filter k8s_cluster == "${filters.k8sCluster}"`);
   }
   if (filters.k8sNamespace) {
-    conditions.push(`k8s.namespace.name == "${filters.k8sNamespace}"`);
+    filterConditions.push(`| filter k8s_namespace == "${filters.k8sNamespace}"`);
   }
   if (filters.k8sWorkload) {
-    conditions.push(`k8s.workload.name == "${filters.k8sWorkload}"`);
-  }
-  if (filters.technology) {
-    conditions.push(`telemetry.sdk.language == "${filters.technology}"`);
-  }
-  if (filters.cloudProvider) {
-    conditions.push(`cloud.provider == "${filters.cloudProvider}"`);
+    filterConditions.push(`| filter k8s_workload == "${filters.k8sWorkload}"`);
   }
   if (filters.serviceName) {
-    conditions.push(`contains(dt.service.name, "${filters.serviceName}")`);
+    filterConditions.push(`| filter contains(entity.name, "${filters.serviceName}")`);
+  }
+  if (filters.serviceTags.length > 0) {
+    filterConditions.push(`| filter iAny(${filters.serviceTags.map(tag => `tags[] == "${tag}"`).join(" OR ")})`);
   }
 
-  const filterClause =
-    conditions.length > 0 ? `| filter ${conditions.join(" AND ")}` : "";
-
-  // Build tag filter using lookup from entities (tags are on entities, not spans)
-  // Use iAny() for iterative array matching
-  const tagLookupClause = filters.serviceTags.length > 0
-    ? `| lookup [
-    fetch dt.entity.service 
-    | filter iAny(${filters.serviceTags.map(tag => `tags[] == "${tag}"`).join(" OR ")})
-    | fields id
-  ], sourceField: dt.smartscape.service, lookupField: id, prefix: "tagged_"
-| filter isNotNull(tagged_id)`
-    : "";
-
-  const query = `fetch spans${timeframeClause}
-| filter request.is_root_span == true
-| filter isNotNull(dt.service.name)
-${filterClause}
-${tagLookupClause}
-| summarize 
-    requestCount = count(),
-    errorCount = countIf(request.is_failed == true),
-    avgDuration = avg(duration),
-    technology = takeAny(telemetry.sdk.language),
-    k8sNamespace = takeAny(k8s.namespace.name),
-    by: {dt.service.name, dt.smartscape.service}
-| fieldsAdd errorRate = (errorCount * 100.0) / requestCount
-| sort requestCount desc
-| limit ${filters.maxRecords || 100}`;
+  const query = `fetch dt.entity.service
+| fields id, entity.name, tags, belongs_to, clustered_by
+| expand belongs_to[dt.entity.cloud_application]
+| expand belongs_to[dt.entity.cloud_application_namespace]
+| expand clustered_by[dt.entity.kubernetes_cluster]
+| fieldsAdd k8s_workload = entityName(\`belongs_to[dt.entity.cloud_application]\`, type:"dt.entity.cloud_application")
+| fieldsAdd k8s_namespace = entityName(\`belongs_to[dt.entity.cloud_application_namespace]\`, type:"dt.entity.cloud_application_namespace")
+| fieldsAdd k8s_cluster = entityName(\`clustered_by[dt.entity.kubernetes_cluster]\`, type:"dt.entity.kubernetes_cluster")
+${filterConditions.join("\n")}
+| dedup id
+| fields id, entity.name, tags, k8s_cluster, k8s_namespace, k8s_workload
+| sort entity.name asc
+| limit ${filters.maxRecords || 1000}`;
 
   const { data, isLoading, error } = useDql({ query });
 
@@ -112,13 +81,12 @@ ${tagLookupClause}
 
   const services: ServiceData[] =
     data?.records?.map((record) => ({
-      serviceName: record["dt.service.name"] as string,
-      serviceId: record["dt.smartscape.service"] as string,
-      requestCount: record["requestCount"] as number,
-      errorRate: record["errorRate"] as number,
-      avgDuration: record["avgDuration"] as number,
-      technology: record["technology"] as string | null,
-      k8sNamespace: record["k8sNamespace"] as string | null,
+      serviceName: String(record["entity.name"] || ""),
+      serviceId: String(record["id"] || ""),
+      k8sCluster: record["k8s_cluster"] ? String(record["k8s_cluster"]) : null,
+      k8sNamespace: record["k8s_namespace"] ? String(record["k8s_namespace"]) : null,
+      k8sWorkload: record["k8s_workload"] ? String(record["k8s_workload"]) : null,
+      tags: Array.isArray(record["tags"]) ? (record["tags"] as string[]).join(", ") : record["tags"] ? String(record["tags"]) : null,
     })) || [];
 
   const columns: DataTableColumnDef<ServiceData>[] = [
@@ -128,9 +96,9 @@ ${tagLookupClause}
       accessor: "serviceName",
     },
     {
-      id: "technology",
-      header: "Technology",
-      accessor: "technology",
+      id: "k8sCluster",
+      header: "K8s Cluster",
+      accessor: "k8sCluster",
       cell: ({ value }) => value || "-",
     },
     {
@@ -140,26 +108,16 @@ ${tagLookupClause}
       cell: ({ value }) => value || "-",
     },
     {
-      id: "requestCount",
-      header: "Requests",
-      accessor: "requestCount",
-      cell: ({ value }) => value?.toLocaleString() || "0",
+      id: "k8sWorkload",
+      header: "K8s Workload",
+      accessor: "k8sWorkload",
+      cell: ({ value }) => value || "-",
     },
     {
-      id: "errorRate",
-      header: "Error Rate",
-      accessor: "errorRate",
-      cell: ({ value }) => (value ? `${value.toFixed(2)}%` : "0%"),
-    },
-    {
-      id: "avgDuration",
-      header: "Avg Duration",
-      accessor: "avgDuration",
-      cell: ({ value }) => {
-        if (!value) return "-";
-        const ms = value / 1_000_000; // nanoseconds to ms
-        return ms < 1000 ? `${ms.toFixed(2)} ms` : `${(ms / 1000).toFixed(2)} s`;
-      },
+      id: "tags",
+      header: "Tags",
+      accessor: "tags",
+      cell: ({ value }) => value || "-",
     },
     {
       id: "actions",

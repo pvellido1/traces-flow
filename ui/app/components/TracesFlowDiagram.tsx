@@ -3,7 +3,10 @@ import { Flex } from "@dynatrace/strato-components/layouts";
 import { Heading, Text } from "@dynatrace/strato-components/typography";
 import { ProgressCircle } from "@dynatrace/strato-components/content";
 import { useCurrentTheme } from "@dynatrace/strato-components/core";
+import { ToggleButtonGroup, Select, SelectOption } from "@dynatrace/strato-components/forms";
+import { Button } from "@dynatrace/strato-components/buttons";
 import { useDql } from "@dynatrace-sdk/react-hooks";
+import { PlusIcon, MinusIcon } from "@dynatrace/strato-icons";
 import { ServiceData } from "./ServicesTable";
 import { FilterValues } from "./ServiceFilters";
 
@@ -16,6 +19,8 @@ const LightColors = {
     borderSelected: "#10b981",
     targetBg: "#e8f5e9",
     targetBorder: "#2f6862",
+    filterMatchBg: "#fff7ed",
+    filterMatchBorder: "#f97316",
   },
   link: {
     default: "#7b8ab8",
@@ -49,6 +54,8 @@ const DarkColors = {
     borderSelected: "#34d399",
     targetBg: "#1a3333",
     targetBorder: "#4ade80",
+    filterMatchBg: "#431407",
+    filterMatchBorder: "#fb923c",
   },
   link: {
     default: "#6b7aa8",
@@ -85,6 +92,9 @@ interface TracesFlowDiagramProps {
 interface TreeNode {
   id: string;
   serviceName: string;
+  serviceId: string | null; // Service entity ID for matching
+  endpointName: string | null; // For endpoint view mode
+  displayName: string; // What to show as main text
   level: number;
   callCount: number;
   callPercentage: number;
@@ -101,7 +111,14 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
   selectedPath,
 }) => {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"service" | "endpoint">("service");
+  const [nodeFilter, setNodeFilter] = useState<string | null>(null);
+  const [zoom, setZoom] = useState<number>(1);
   const theme = useCurrentTheme();
+
+  const handleZoomIn = () => setZoom(z => Math.min(z + 0.1, 2));
+  const handleZoomOut = () => setZoom(z => Math.max(z - 0.1, 0.3));
+  const handleZoomReset = () => setZoom(1);
   const Colors = theme === "dark" ? DarkColors : LightColors;
 
   // Build timeframe for DQL
@@ -122,16 +139,17 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
 
   // Single query: fetch ALL spans for traces that contain the selected service
   // Uses lookup to first identify relevant trace IDs, then fetches complete hierarchy
+  // Filter by service entity ID (dt.smartscape.service) which is more reliable than name
   const orderQuery = `fetch spans${timeframeClause}
 | filter isNotNull(trace.id)
 | lookup [
     fetch spans${timeframeClause}
-    | filter dt.service.name == "${service.serviceName}"
+    | filter dt.smartscape.service == "${service.serviceId}"
     | summarize count(), by: {trace.id}
     | limit ${maxTraces}
   ], sourceField: trace.id, lookupField: trace.id, prefix: "match_"
 | filter isNotNull(match_trace.id)
-| fields trace.id, span.id, span.parent_id, dt.service.name, start_time
+| fields trace.id, span.id, span.parent_id, dt.service.name, dt.smartscape.service, endpoint.name, span.name, start_time
 | sort trace.id, start_time asc
 | limit ${maxSpans}`;
 
@@ -139,6 +157,41 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     query: orderQuery,
     maxResultRecords: maxSpans 
   });
+
+  // Collect unique service names for filtering
+  const uniqueServices = useMemo(() => {
+    if (!orderData?.records || orderData.records.length === 0) {
+      return [];
+    }
+    const serviceSet = new Set<string>();
+    orderData.records.forEach((record) => {
+      const rawServiceName = record["dt.service.name"];
+      if (rawServiceName) {
+        serviceSet.add(String(rawServiceName));
+      }
+    });
+    return Array.from(serviceSet).sort();
+  }, [orderData]);
+
+  // Collect unique endpoint names for filtering
+  const uniqueEndpoints = useMemo(() => {
+    if (!orderData?.records || orderData.records.length === 0) {
+      return [];
+    }
+    const endpointSet = new Set<string>();
+    orderData.records.forEach((record) => {
+      const rawEndpointName = record["endpoint.name"];
+      const rawSpanName = record["span.name"];
+      const effectiveEndpoint = rawEndpointName ? String(rawEndpointName) : (rawSpanName ? String(rawSpanName) : null);
+      if (effectiveEndpoint) {
+        endpointSet.add(effectiveEndpoint);
+      }
+    });
+    return Array.from(endpointSet).sort();
+  }, [orderData]);
+
+  // Get filter options based on view mode
+  const filterOptions = viewMode === "service" ? uniqueServices : uniqueEndpoints;
 
   // Build tree structure from trace data
   const { flatNodes, flatLinks, totalTraces, maxLevel } = useMemo(() => {
@@ -151,6 +204,8 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
       spanId: string;
       parentId: string | null;
       serviceName: string | null;  // null for spans without service (internal, some clients)
+      serviceId: string | null;    // Service entity ID for matching
+      endpointName: string | null; // endpoint.name or span.name as fallback
       startTime: string;
     }
     
@@ -160,10 +215,17 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     orderData.records.forEach((record) => {
       const traceId = String(record["trace.id"]);
       const rawServiceName = record["dt.service.name"];
+      const rawServiceId = record["dt.smartscape.service"];
+      const rawEndpointName = record["endpoint.name"];
+      const rawSpanName = record["span.name"];
+      // Use endpoint.name if available, otherwise fall back to span.name
+      const effectiveEndpoint = rawEndpointName ? String(rawEndpointName) : (rawSpanName ? String(rawSpanName) : null);
       const span: SpanInfo = {
         spanId: String(record["span.id"] || ""),
         parentId: record["span.parent_id"] ? String(record["span.parent_id"]) : null,
         serviceName: rawServiceName ? String(rawServiceName) : null,
+        serviceId: rawServiceId ? String(rawServiceId) : null,
+        endpointName: effectiveEndpoint,
         startTime: String(record["start_time"] || ""),
       };
       
@@ -174,16 +236,41 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     });
 
     // Query already filtered for traces containing the service via lookup
-    // Just limit to maxRecords
-    const limitedTraces = Array.from(traceSpans.entries()).slice(0, filters.maxRecords || 500);
+    // Filter by service or endpoint if selected, then limit to maxRecords
+    let filteredTraces = Array.from(traceSpans.entries());
+    
+    // If filter is set, only include traces that contain that service/endpoint
+    if (nodeFilter) {
+      if (viewMode === "service") {
+        filteredTraces = filteredTraces.filter(([_, spans]) => 
+          spans.some(span => span.serviceName === nodeFilter)
+        );
+      } else {
+        filteredTraces = filteredTraces.filter(([_, spans]) => 
+          spans.some(span => span.endpointName === nodeFilter)
+        );
+      }
+    }
+    
+    const limitedTraces = filteredTraces.slice(0, filters.maxRecords || 500);
     const totalTraces = limitedTraces.length;
 
     let nodeIdCounter = 0;
     const rootChildren = new Map<string, TreeNode>();
     let maxLevel = 0;
 
-    // Build service order from parent-child hierarchy for each trace
-    const buildServiceOrderFromHierarchy = (spans: SpanInfo[]): string[] => {
+    // Node info for building the tree
+    interface NodeInfo {
+      key: string; // Unique key for grouping
+      displayName: string; // What to show as main label
+      serviceName: string;
+      serviceId: string | null; // Service entity ID for matching
+      endpointName: string | null;
+    }
+
+    // Build order from parent-child hierarchy for each trace using DFS
+    // This ensures children appear immediately after their parent in the call sequence
+    const buildOrderFromHierarchy = (spans: SpanInfo[]): NodeInfo[] => {
       // Build a map of spanId -> span and parentId -> children
       const spanMap = new Map<string, SpanInfo>();
       const childrenMap = new Map<string | null, SpanInfo[]>();
@@ -201,61 +288,124 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
         span.parentId === null || !spanMap.has(span.parentId)
       );
 
-      // Sort roots by start_time as fallback
-      rootSpans.sort((a, b) => a.startTime.localeCompare(b.startTime));
+      // Sort roots by span.id for deterministic ordering (not by time)
+      rootSpans.sort((a, b) => a.spanId.localeCompare(b.spanId));
 
-      // BFS traversal to get service order following the call hierarchy
-      const serviceOrder: string[] = [];
+      // DFS traversal to follow the actual call hierarchy
+      // Children appear immediately after their parent in the sequence
+      const nodeOrder: NodeInfo[] = [];
       const visited = new Set<string>();
-      const queue: SpanInfo[] = [...rootSpans];
+      const seenKeys = new Set<string>();
 
-      while (queue.length > 0) {
-        const span = queue.shift()!;
-        if (visited.has(span.spanId)) continue;
+      const processSpan = (span: SpanInfo) => {
+        if (visited.has(span.spanId)) return;
         visited.add(span.spanId);
 
-        // Add service if it has a name and not already in order
-        // (some spans like internal/client may not have a service name)
-        if (span.serviceName && !serviceOrder.includes(span.serviceName)) {
-          serviceOrder.push(span.serviceName);
+        // Build the node info based on view mode
+        if (viewMode === "endpoint") {
+          // For endpoint mode: use endpoint+service as key
+          if (span.endpointName && span.serviceName) {
+            const key = `${span.endpointName}@${span.serviceName}`;
+            if (!seenKeys.has(key)) {
+              seenKeys.add(key);
+              nodeOrder.push({
+                key,
+                displayName: span.endpointName,
+                serviceName: span.serviceName,
+                serviceId: span.serviceId,
+                endpointName: span.endpointName,
+              });
+            } else if (span.serviceId) {
+              // Update serviceId if we have one now but didn't before
+              const existingNode = nodeOrder.find(n => n.key === key);
+              if (existingNode && !existingNode.serviceId) {
+                existingNode.serviceId = span.serviceId;
+              }
+            }
+          } else if (span.serviceName) {
+            // Fallback: span has service but no endpoint
+            const key = `(no endpoint)@${span.serviceName}`;
+            if (!seenKeys.has(key)) {
+              seenKeys.add(key);
+              nodeOrder.push({
+                key,
+                displayName: "(no endpoint)",
+                serviceName: span.serviceName,
+                serviceId: span.serviceId,
+                endpointName: null,
+              });
+            } else if (span.serviceId) {
+              const existingNode = nodeOrder.find(n => n.key === key);
+              if (existingNode && !existingNode.serviceId) {
+                existingNode.serviceId = span.serviceId;
+              }
+            }
+          }
+        } else {
+          // Service mode: use service name as key
+          if (span.serviceName) {
+            if (!seenKeys.has(span.serviceName)) {
+              seenKeys.add(span.serviceName);
+              nodeOrder.push({
+                key: span.serviceName,
+                displayName: span.serviceName,
+                serviceName: span.serviceName,
+                serviceId: span.serviceId,
+                endpointName: null,
+              });
+            } else if (span.serviceId) {
+              // Update serviceId if we have one now but didn't before
+              const existingNode = nodeOrder.find(n => n.key === span.serviceName);
+              if (existingNode && !existingNode.serviceId) {
+                existingNode.serviceId = span.serviceId;
+              }
+            }
+          }
         }
 
-        // Add children to queue (sorted by start_time as secondary ordering)
+        // Process children immediately after parent (DFS)
+        // Sort siblings by span.id for deterministic ordering
         const children = childrenMap.get(span.spanId) || [];
-        children.sort((a, b) => a.startTime.localeCompare(b.startTime));
-        queue.push(...children);
-      }
+        children.sort((a, b) => a.spanId.localeCompare(b.spanId));
+        children.forEach(child => processSpan(child));
+      };
 
-      return serviceOrder;
+      // Start DFS from each root span
+      rootSpans.forEach(root => processSpan(root));
+
+      return nodeOrder;
     };
 
     // Process each trace to build the tree
     limitedTraces.forEach(([traceId, spans], idx) => {
-      const uniqueServices = buildServiceOrderFromHierarchy(spans);
+      const nodeInfos = buildOrderFromHierarchy(spans);
       
-      if (uniqueServices.length === 0) return;
+      if (nodeInfos.length === 0) return;
       
-      maxLevel = Math.max(maxLevel, uniqueServices.length - 1);
+      maxLevel = Math.max(maxLevel, nodeInfos.length - 1);
       
       // Walk down the tree, creating nodes as needed
       let currentLevel = rootChildren;
       
-      uniqueServices.forEach((svc, idx) => {
-        if (!currentLevel.has(svc)) {
-          currentLevel.set(svc, {
+      nodeInfos.forEach((info, idx) => {
+        if (!currentLevel.has(info.key)) {
+          currentLevel.set(info.key, {
             id: `node-${nodeIdCounter++}`,
-            serviceName: svc,
+            serviceName: info.serviceName,
+            serviceId: info.serviceId,
+            endpointName: info.endpointName,
+            displayName: info.displayName,
             level: idx,
             callCount: 0,
             callPercentage: 0,
             children: new Map(),
             y: 0,
             height: 0,
-            pathKey: uniqueServices.slice(0, idx + 1).join("|"),
+            pathKey: nodeInfos.slice(0, idx + 1).map(n => n.key).join("|"),
           });
         }
         
-        const node = currentLevel.get(svc)!;
+        const node = currentLevel.get(info.key)!;
         node.callCount++;
         node.callPercentage = (node.callCount / totalTraces) * 100;
         
@@ -267,6 +417,9 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     const flatNodes: Array<{
       id: string;
       serviceName: string;
+      serviceId: string | null;
+      endpointName: string | null;
+      displayName: string;
       level: number;
       callCount: number;
       callPercentage: number;
@@ -291,7 +444,8 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     }> = [];
 
     const nodeWidth = 220;
-    const nodeHeight = 80;
+    // Taller nodes for endpoint view to fit both endpoint name and service name
+    const nodeHeight = viewMode === "endpoint" ? 95 : 80;
     const levelGap = 200;
     const nodeGap = 15;
     const paddingX = 50;
@@ -329,6 +483,9 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
         flatNodes.push({
           id: node.id,
           serviceName: node.serviceName,
+          serviceId: node.serviceId,
+          endpointName: node.endpointName,
+          displayName: node.displayName,
           level: node.level,
           callCount: node.callCount,
           callPercentage: node.callPercentage,
@@ -382,7 +539,7 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     });
 
     return { flatNodes, flatLinks, totalTraces, maxLevel };
-  }, [orderData]);
+  }, [orderData, viewMode, filters.maxRecords, nodeFilter]);
 
   // Calculate SVG dimensions
   const svgWidth = flatNodes.length > 0 
@@ -393,7 +550,7 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
     : 400;
 
   const isNodeSelected = (pathKey: string) => {
-    if (!selectedPath) return false;
+    if (!selectedPath || selectedPath.length === 0) return false;
     const selectedKey = selectedPath.join("|");
     return pathKey === selectedKey || selectedKey.startsWith(pathKey + "|");
   };
@@ -425,9 +582,41 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
   return (
     <Flex flexDirection="column" gap={16}>
       <Flex justifyContent="space-between" alignItems="center">
-        <Heading level={3}>Service Flow - {service.serviceName}</Heading>
+        <Flex alignItems="center" gap={16}>
+          <Heading level={3}>Service Flow - {service.serviceName}</Heading>
+          <ToggleButtonGroup 
+            value={viewMode} 
+            onChange={(value: string) => {
+              setViewMode(value as "service" | "endpoint");
+              setNodeFilter(null); // Clear filter when switching views
+              onPathSelect([]); // Clear selection when switching views
+            }}
+          >
+            <ToggleButtonGroup.Item value="service">By Service</ToggleButtonGroup.Item>
+            <ToggleButtonGroup.Item value="endpoint">By Endpoint</ToggleButtonGroup.Item>
+          </ToggleButtonGroup>
+          <div style={{ minWidth: 300 }}>
+            <Select<string>
+              value={nodeFilter}
+              onChange={(value) => {
+                setNodeFilter(value);
+                onPathSelect([]); // Clear selection when filter changes
+              }}
+              clearable
+            >
+              <Select.Filter />
+              <Select.Content style={{ maxHeight: 300, minWidth: 350 }}>
+                {filterOptions.map((option) => (
+                  <SelectOption key={option} value={option}>
+                    {option}
+                  </SelectOption>
+                ))}
+              </Select.Content>
+            </Select>
+          </div>
+        </Flex>
         <Text style={{ fontSize: 12, color: Colors.text.secondary }}>
-          {totalTraces} traces analyzed · Click a service to select path
+          {totalTraces} traces analyzed{nodeFilter ? ` (filtered)` : ""} · Click a {viewMode === "endpoint" ? "endpoint" : "service"} to select path
         </Text>
       </Flex>
 
@@ -440,13 +629,41 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
           border: `1px solid ${Colors.container.border}`,
           borderRadius: 8,
           backgroundColor: Colors.container.background,
+          position: "relative",
         }}
       >
+        {/* Zoom controls */}
+        <Flex
+          gap={4}
+          style={{
+            position: "sticky",
+            top: 8,
+            left: 8,
+            zIndex: 10,
+            padding: 4,
+            background: Colors.label.background,
+            borderRadius: 6,
+            border: `1px solid ${Colors.label.border}`,
+            width: "fit-content",
+            marginBottom: -40,
+          }}
+        >
+          <Button variant="default" color="neutral" onClick={handleZoomOut} aria-label="Zoom out">
+            <MinusIcon />
+          </Button>
+          <Button variant="default" color="neutral" onClick={handleZoomReset} style={{ minWidth: 50, fontSize: 12 }}>
+            {Math.round(zoom * 100)}%
+          </Button>
+          <Button variant="default" color="neutral" onClick={handleZoomIn} aria-label="Zoom in">
+            <PlusIcon />
+          </Button>
+        </Flex>
         <svg
-          width={Math.max(svgWidth, 800)}
-          height={Math.max(svgHeight, 400)}
+          width={Math.max(svgWidth, 800) * zoom}
+          height={Math.max(svgHeight, 400) * zoom}
           style={{ display: "block" }}
         >
+          <g transform={`scale(${zoom})`}>
           {/* Links */}
           {flatLinks.map((link, idx) => {
             const targetNode = flatNodes.find(n => n.id === link.targetId);
@@ -479,10 +696,25 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
 
           {/* Nodes */}
           {flatNodes.map((node) => {
-            const isTarget = node.serviceName === service.serviceName;
+            // Match by serviceId (preferred) or serviceName (fallback)
+            const isTarget = (node.serviceId && node.serviceId === service.serviceId) || 
+                             node.serviceName === service.serviceName;
+            // Check if node matches the filter selection
+            const isFilterMatch = nodeFilter ? (
+              viewMode === "service" 
+                ? node.serviceName === nodeFilter
+                : node.endpointName === nodeFilter || `${node.endpointName}@${node.serviceName}` === nodeFilter
+            ) : false;
             const isSelected = isNodeSelected(node.pathKey);
             const isHovered = hoveredNode === node.id;
             const progressWidth = Math.min(100, node.callPercentage);
+            
+            // Y positions for text elements based on view mode
+            const nameY = viewMode === "endpoint" ? 20 : 22;
+            const serviceY = viewMode === "endpoint" ? 35 : 0; // Only used in endpoint mode
+            const percentY = viewMode === "endpoint" ? 52 : 40;
+            const progressY = viewMode === "endpoint" ? 60 : 48;
+            const countY = viewMode === "endpoint" ? 80 : 68;
 
             return (
               <g
@@ -509,14 +741,19 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
                   width={node.width}
                   height={node.height}
                   rx={6}
-                  fill={isTarget ? Colors.node.targetBg : Colors.node.background}
+                  fill={
+                    isTarget ? Colors.node.targetBg 
+                    : isFilterMatch ? Colors.node.filterMatchBg 
+                    : Colors.node.background
+                  }
                   stroke={
                     isSelected ? Colors.node.borderSelected
                     : isHovered ? Colors.node.borderHover
                     : isTarget ? Colors.node.targetBorder
+                    : isFilterMatch ? Colors.node.filterMatchBorder
                     : Colors.node.border
                   }
-                  strokeWidth={isSelected || isHovered ? 2 : 1}
+                  strokeWidth={isSelected || isHovered || isFilterMatch ? 2 : 1}
                 />
                 {/* Left accent bar */}
                 <rect
@@ -525,30 +762,40 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
                   width={4}
                   height={node.height}
                   rx={2}
-                  fill={isTarget ? Colors.node.targetBorder : Colors.text.accent}
+                  fill={
+                    isTarget ? Colors.node.targetBorder 
+                    : isFilterMatch ? Colors.node.filterMatchBorder 
+                    : Colors.text.accent
+                  }
                 />
-                {/* Service name */}
-                <text x={15} y={22} fontSize={12} fontWeight={600} fill={Colors.text.primary}>
-                  {node.serviceName.length > 26 ? node.serviceName.substring(0, 23) + "..." : node.serviceName}
+                {/* Main name (endpoint name in endpoint mode, service name in service mode) */}
+                <text x={15} y={nameY} fontSize={12} fontWeight={600} fill={Colors.text.primary}>
+                  {node.displayName.length > 26 ? node.displayName.substring(0, 23) + "..." : node.displayName}
                 </text>
-                <title>{node.serviceName}</title>
+                <title>{viewMode === "endpoint" ? `${node.displayName}\n${node.serviceName}` : node.serviceName}</title>
+                {/* Service name (only in endpoint mode) */}
+                {viewMode === "endpoint" && (
+                  <text x={15} y={serviceY} fontSize={10} fill={Colors.text.secondary}>
+                    {node.serviceName.length > 30 ? node.serviceName.substring(0, 27) + "..." : node.serviceName}
+                  </text>
+                )}
                 {/* Percentage text */}
-                <text x={15} y={40} fontSize={10} fill={Colors.text.secondary}>
+                <text x={15} y={percentY} fontSize={10} fill={Colors.text.secondary}>
                   {node.callPercentage.toFixed(1)}% of traces
                 </text>
                 {/* Progress bar bg */}
-                <rect x={15} y={48} width={node.width - 30} height={6} rx={3} fill={Colors.progress.bg} />
+                <rect x={15} y={progressY} width={node.width - 30} height={6} rx={3} fill={Colors.progress.bg} />
                 {/* Progress bar */}
                 <rect
                   x={15}
-                  y={48}
+                  y={progressY}
                   width={((node.width - 30) * progressWidth) / 100}
                   height={6}
                   rx={3}
                   fill={isTarget ? Colors.node.targetBorder : Colors.progress.bar}
                 />
                 {/* Trace count */}
-                <text x={15} y={68} fontSize={9} fill={Colors.text.secondary}>
+                <text x={15} y={countY} fontSize={9} fill={Colors.text.secondary}>
                   {node.callCount.toLocaleString()} traces
                 </text>
                 {/* Children indicator */}
@@ -560,6 +807,7 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
               </g>
             );
           })}
+          </g>
         </svg>
       </div>
     </Flex>

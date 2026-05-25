@@ -16,7 +16,8 @@ import { ExternalLinkIcon } from "@dynatrace/strato-icons";
 interface TracesTableProps {
   path: string[];
   filters: FilterValues;
-  rootService: string;
+  rootServiceId: string;
+  rootServiceName: string;
 }
 
 interface TraceData {
@@ -27,7 +28,7 @@ interface TraceData {
   services: string[];
 }
 
-export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootService }) => {
+export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootServiceId, rootServiceName }) => {
   // Build timeframe for DQL - use expression format when available
   const getTimeframeParam = () => {
     if (!filters.timeframe) return "";
@@ -43,18 +44,22 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
   const maxTraces = filters.maxRecords || 500;
   const maxSpans = Math.min(maxTraces * 100, 1000000); // Cap at 1M spans
 
+  // Detect if path is from endpoint view (endpoint keys contain "@")
+  const isEndpointPath = path.length > 0 && path[0].includes("@");
+
   // Query fetches ALL spans for traces that contain the selected path's root service
   // Uses lookup to filter to relevant traces, then fetches complete hierarchy
+  // Filter by service entity ID (dt.smartscape.service) which is more reliable than name
   const query = `fetch spans${timeframeClause}
 | filter isNotNull(trace.id)
 | lookup [
     fetch spans${timeframeClause}
-    | filter dt.service.name == "${rootService}"
+    | filter dt.smartscape.service == "${rootServiceId}"
     | summarize count(), by: {trace.id}
     | limit ${maxTraces}
   ], sourceField: trace.id, lookupField: trace.id, prefix: "match_"
 | filter isNotNull(match_trace.id)
-| fields trace.id, span.id, span.parent_id, dt.service.name, start_time, request.is_failed, duration
+| fields trace.id, span.id, span.parent_id, dt.service.name, endpoint.name, span.name, start_time, request.is_failed, duration
 | sort trace.id, start_time asc
 | limit ${maxSpans}`;
 
@@ -75,11 +80,13 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
     spanId: string;
     parentId: string | null;
     serviceName: string | null;  // null for spans without service
+    endpointName: string | null; // endpoint.name or span.name as fallback
     startTime: string;
     isFailed: boolean;
     duration: number;
   }
 
+  // Build service order from parent-child hierarchy using DFS (matches TracesFlowDiagram)
   const buildServiceOrderFromHierarchy = (spans: SpanInfo[]): string[] => {
     const spanMap = new Map<string, SpanInfo>();
     const childrenMap = new Map<string | null, SpanInfo[]>();
@@ -96,16 +103,15 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
     const rootSpans = spans.filter(span => 
       span.parentId === null || !spanMap.has(span.parentId)
     );
-    rootSpans.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    // Sort by spanId for deterministic ordering (not by time)
+    rootSpans.sort((a, b) => a.spanId.localeCompare(b.spanId));
 
-    // BFS traversal
+    // DFS traversal - children immediately after parent
     const serviceOrder: string[] = [];
     const visited = new Set<string>();
-    const queue: SpanInfo[] = [...rootSpans];
 
-    while (queue.length > 0) {
-      const span = queue.shift()!;
-      if (visited.has(span.spanId)) continue;
+    const processSpan = (span: SpanInfo) => {
+      if (visited.has(span.spanId)) return;
       visited.add(span.spanId);
 
       // Only add if service name exists and not already in order
@@ -113,24 +119,86 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
         serviceOrder.push(span.serviceName);
       }
 
+      // Process children immediately (DFS)
       const children = childrenMap.get(span.spanId) || [];
-      children.sort((a, b) => a.startTime.localeCompare(b.startTime));
-      queue.push(...children);
-    }
+      children.sort((a, b) => a.spanId.localeCompare(b.spanId));
+      children.forEach(child => processSpan(child));
+    };
 
+    rootSpans.forEach(root => processSpan(root));
     return serviceOrder;
   };
 
-  // Helper function to check if trace path STARTS WITH selected path (prefix matching)
-  // This allows clicking on intermediate nodes to show all traces going through that path
-  const matchesPath = (traceServices: string[]): boolean => {
-    // Trace must have at least as many services as the selected path
-    if (traceServices.length < path.length) return false;
-    // Check if the trace starts with the selected path
-    for (let i = 0; i < path.length; i++) {
-      if (traceServices[i] !== path[i]) return false;
+  // Build endpoint order from parent-child hierarchy using DFS (matches TracesFlowDiagram)
+  const buildEndpointOrderFromHierarchy = (spans: SpanInfo[]): string[] => {
+    const spanMap = new Map<string, SpanInfo>();
+    const childrenMap = new Map<string | null, SpanInfo[]>();
+    
+    spans.forEach(span => {
+      spanMap.set(span.spanId, span);
+      if (!childrenMap.has(span.parentId)) {
+        childrenMap.set(span.parentId, []);
+      }
+      childrenMap.get(span.parentId)!.push(span);
+    });
+
+    // Find root spans
+    const rootSpans = spans.filter(span => 
+      span.parentId === null || !spanMap.has(span.parentId)
+    );
+    // Sort by spanId for deterministic ordering (not by time)
+    rootSpans.sort((a, b) => a.spanId.localeCompare(b.spanId));
+
+    // DFS traversal - children immediately after parent
+    const endpointOrder: string[] = [];
+    const visited = new Set<string>();
+    const seenKeys = new Set<string>();
+
+    const processSpan = (span: SpanInfo) => {
+      if (visited.has(span.spanId)) return;
+      visited.add(span.spanId);
+
+      // Build endpoint key: endpoint@service (same as TracesFlowDiagram)
+      if (span.endpointName && span.serviceName) {
+        const key = `${span.endpointName}@${span.serviceName}`;
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          endpointOrder.push(key);
+        }
+      } else if (span.serviceName) {
+        // Fallback for spans without endpoint
+        const key = `(no endpoint)@${span.serviceName}`;
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          endpointOrder.push(key);
+        }
+      }
+
+      // Process children immediately (DFS)
+      const children = childrenMap.get(span.spanId) || [];
+      children.sort((a, b) => a.spanId.localeCompare(b.spanId));
+      children.forEach(child => processSpan(child));
+    };
+
+    rootSpans.forEach(root => processSpan(root));
+    return endpointOrder;
+  };
+
+  // Helper function to check if trace contains the selected path as a subsequence
+  // This allows traces that have additional services/endpoints between the ones in the path
+  const matchesPath = (traceOrder: string[]): boolean => {
+    if (path.length === 0) return false;
+    if (traceOrder.length < path.length) return false;
+    
+    // Check if all path elements appear in traceOrder in the same order
+    // (not necessarily consecutively - allows intermediate services)
+    let pathIdx = 0;
+    for (let i = 0; i < traceOrder.length && pathIdx < path.length; i++) {
+      if (traceOrder[i] === path[pathIdx]) {
+        pathIdx++;
+      }
     }
-    return true;
+    return pathIdx === path.length;
   };
 
   if (isLoading) {
@@ -155,10 +223,15 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
   data?.records?.forEach((record) => {
     const traceId = String(record["trace.id"]);
     const rawServiceName = record["dt.service.name"];
+    const rawEndpointName = record["endpoint.name"];
+    const rawSpanName = record["span.name"];
+    // Use endpoint.name if available, otherwise fall back to span.name
+    const effectiveEndpoint = rawEndpointName ? String(rawEndpointName) : (rawSpanName ? String(rawSpanName) : null);
     const span: SpanInfo = {
       spanId: String(record["span.id"] || ""),
       parentId: record["span.parent_id"] ? String(record["span.parent_id"]) : null,
       serviceName: rawServiceName ? String(rawServiceName) : null,
+      endpointName: effectiveEndpoint,
       startTime: String(record["start_time"] || ""),
       isFailed: record["request.is_failed"] === true,
       duration: (record["duration"] as number) || 0,
@@ -170,10 +243,14 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
     traceSpansMap.get(traceId)!.push(span);
   });
 
-  // Build traces with hierarchy-based service order
-  const allTraces: TraceData[] = [];
+  // Build traces with hierarchy-based order (service or endpoint depending on path type)
+  interface ExtendedTraceData extends TraceData {
+    endpointOrder: string[];
+  }
+  const allTraces: ExtendedTraceData[] = [];
   traceSpansMap.forEach((spans, traceId) => {
     const serviceOrder = buildServiceOrderFromHierarchy(spans);
+    const endpointOrder = buildEndpointOrderFromHierarchy(spans);
     const hasFailed = spans.some(s => s.isFailed);
     const earliestStart = spans.reduce((min, s) => 
       s.startTime < min ? s.startTime : min, spans[0]?.startTime || "");
@@ -186,13 +263,15 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
       duration: rootSpan?.duration || 0,
       status: hasFailed ? "error" : "success",
       services: serviceOrder,
+      endpointOrder: endpointOrder,
     });
   });
 
-  // Filter to traces containing rootService and matching the selected path
+  // Filter to traces matching the selected path
+  // The query already filters to traces containing the selected service via lookup
+  // Use endpoint order for matching if path is from endpoint view
   const traces = allTraces
-    .filter((trace) => trace.services.includes(rootService))
-    .filter((trace) => matchesPath(trace.services))
+    .filter((trace) => matchesPath(isEndpointPath ? trace.endpointOrder : trace.services))
     .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
     .slice(0, filters.maxRecords || 500);
 

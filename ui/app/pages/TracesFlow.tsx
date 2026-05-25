@@ -31,8 +31,7 @@ export const TracesFlow: React.FC = () => {
     k8sNamespace: null,
     k8sWorkload: null,
     serviceTags: [],
-    technology: null,
-    cloudProvider: null,
+
     serviceName: "",
     timeframe: getDefaultTimeframe(),
     maxRecords: 1000,
@@ -102,7 +101,8 @@ export const TracesFlow: React.FC = () => {
                 <TracesTable 
                   path={selectedPath} 
                   filters={filters} 
-                  rootService={selectedService.serviceName}
+                  rootServiceId={selectedService.serviceId}
+                  rootServiceName={selectedService.serviceName}
                 />
               </Flex>
             </Surface>

@@ -1,7 +1,7 @@
 import React from "react";
 import { Flex } from "@dynatrace/strato-components/layouts";
 import { TextInput } from "@dynatrace/strato-components-preview/forms";
-import { Select, SelectOption, SelectContent } from "@dynatrace/strato-components-preview/forms";
+import { Select, SelectOption, SelectContent, SelectFilter } from "@dynatrace/strato-components-preview/forms";
 import { TimeframeSelector } from "@dynatrace/strato-components-preview/filters";
 import { NumberInput } from "@dynatrace/strato-components-preview/forms";
 import { Label } from "@dynatrace/strato-components-preview/forms";
@@ -24,8 +24,6 @@ export interface FilterValues {
   k8sNamespace: string | null;
   k8sWorkload: string | null;
   serviceTags: string[];
-  technology: string | null;
-  cloudProvider: string | null;
   serviceName: string;
   timeframe: Timeframe | null;
   maxRecords: number;
@@ -61,78 +59,75 @@ export const ServiceFilters: React.FC<ServiceFiltersProps> = ({
   const timeframeClause = getTimeframeParam();
   const limitClause = `| limit ${filters.maxRecords || 1000}`;
 
-  // Query for service names (most reliable field)
+  // Query for service names from dt.entity.service
   const { data: servicesData, error: servicesError, isLoading: servicesLoading } = useDql({
-    query: `fetch spans${timeframeClause}
-| filter isNotNull(dt.service.name)
-| summarize count(), by: {dt.service.name}
-| sort \`count()\` desc
+    query: `fetch dt.entity.service
+| fields entity.name
+| sort entity.name asc
 ${limitClause}`,
   });
 
-  // Query for K8s clusters
+  // Query for K8s clusters using entityName with type parameter
   const { data: clustersData, error: clustersError } = useDql({
-    query: `fetch spans${timeframeClause}
-| filter isNotNull(k8s.cluster.name)
-| summarize count(), by: {k8s.cluster.name}
+    query: `fetch dt.entity.service
+| expand clustered_by[dt.entity.kubernetes_cluster]
+| fieldsAdd k8s_cluster = entityName(\`clustered_by[dt.entity.kubernetes_cluster]\`, type:"dt.entity.kubernetes_cluster")
+| filter isNotNull(k8s_cluster)
+| summarize count(), by: {k8s_cluster}
 | sort \`count()\` desc
 ${limitClause}`,
   });
 
-  // Query for K8s namespaces
-  const namespaceFilter = filters.k8sCluster
-    ? `| filter k8s.cluster.name == "${filters.k8sCluster}"`
+  // Query for K8s namespaces using entityName with type parameter
+  const namespaceClusterFilter = filters.k8sCluster
+    ? `| expand clustered_by[dt.entity.kubernetes_cluster]
+| fieldsAdd k8s_cluster = entityName(\`clustered_by[dt.entity.kubernetes_cluster]\`, type:"dt.entity.kubernetes_cluster")
+| filter k8s_cluster == "${filters.k8sCluster}"`
     : "";
   const { data: namespacesData } = useDql({
-    query: `fetch spans${timeframeClause}
-| filter isNotNull(k8s.namespace.name)
-${namespaceFilter}
-| summarize count(), by: {k8s.namespace.name}
+    query: `fetch dt.entity.service
+| expand belongs_to[dt.entity.cloud_application_namespace]
+${namespaceClusterFilter}
+| fieldsAdd k8s_namespace = entityName(\`belongs_to[dt.entity.cloud_application_namespace]\`, type:"dt.entity.cloud_application_namespace")
+| filter isNotNull(k8s_namespace)
+| summarize count(), by: {k8s_namespace}
 | sort \`count()\` desc
 ${limitClause}`,
   });
 
-  // Query for K8s workloads
-  const workloadFilters = [
-    filters.k8sCluster ? `k8s.cluster.name == "${filters.k8sCluster}"` : "",
-    filters.k8sNamespace
-      ? `k8s.namespace.name == "${filters.k8sNamespace}"`
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" AND ");
-  const workloadFilterClause = workloadFilters ? `| filter ${workloadFilters}` : "";
+  // Query for K8s workloads using entityName with type parameter
+  const workloadClusterFilter = filters.k8sCluster
+    ? `| expand clustered_by[dt.entity.kubernetes_cluster]
+| fieldsAdd k8s_cluster = entityName(\`clustered_by[dt.entity.kubernetes_cluster]\`, type:"dt.entity.kubernetes_cluster")
+| filter k8s_cluster == "${filters.k8sCluster}"`
+    : "";
+  const workloadNamespaceFilter = filters.k8sNamespace
+    ? `| expand belongs_to[dt.entity.cloud_application_namespace]
+| fieldsAdd k8s_namespace = entityName(\`belongs_to[dt.entity.cloud_application_namespace]\`, type:"dt.entity.cloud_application_namespace")
+| filter k8s_namespace == "${filters.k8sNamespace}"`
+    : "";
   const { data: workloadsData } = useDql({
-    query: `fetch spans${timeframeClause}
-| filter isNotNull(k8s.workload.name)
-${workloadFilterClause}
-| summarize count(), by: {k8s.workload.name}
+    query: `fetch dt.entity.service
+| expand belongs_to[dt.entity.cloud_application]
+${workloadClusterFilter}
+${workloadNamespaceFilter}
+| fieldsAdd k8s_workload = entityName(\`belongs_to[dt.entity.cloud_application]\`, type:"dt.entity.cloud_application")
+| filter isNotNull(k8s_workload)
+| summarize count(), by: {k8s_workload}
 | sort \`count()\` desc
 ${limitClause}`,
   });
 
-  // Query for technologies
-  const { data: technologiesData } = useDql({
-    query: `fetch spans${timeframeClause}
-| filter isNotNull(telemetry.sdk.language)
-| summarize count(), by: {telemetry.sdk.language}
-| sort \`count()\` desc
-${limitClause}`,
-  });
-
-  // Query for cloud providers
-  const { data: cloudProvidersData } = useDql({
-    query: `fetch spans${timeframeClause}
-| filter isNotNull(cloud.provider)
-| summarize count(), by: {cloud.provider}
-| sort \`count()\` desc
-${limitClause}`,
-  });
-
-  // Query for service tags - fetch from service entities, not spans
+  // Query for service tags
+  const tagsClusterFilter = filters.k8sCluster
+    ? `| expand clustered_by[dt.entity.kubernetes_cluster]
+| fieldsAdd k8s_cluster = entityName(\`clustered_by[dt.entity.kubernetes_cluster]\`, type:"dt.entity.kubernetes_cluster")
+| filter k8s_cluster == "${filters.k8sCluster}"`
+    : "";
   const { data: tagsData, isLoading: tagsLoading } = useDql({
     query: `fetch dt.entity.service
 | filter isNotNull(tags) AND arraySize(tags) > 0
+${tagsClusterFilter}
 | expand tag = tags
 | summarize count(), by: {tag}
 | sort \`count()\` desc
@@ -160,12 +155,10 @@ ${limitClause}`,
     return values;
   };
 
-  const serviceNames = extractValues(servicesData?.records as Record<string, unknown>[] | undefined, "dt.service.name");
-  const clusters = extractValues(clustersData?.records as Record<string, unknown>[] | undefined, "k8s.cluster.name");
-  const namespaces = extractValues(namespacesData?.records as Record<string, unknown>[] | undefined, "k8s.namespace.name");
-  const workloads = extractValues(workloadsData?.records as Record<string, unknown>[] | undefined, "k8s.workload.name");
-  const technologies = extractValues(technologiesData?.records as Record<string, unknown>[] | undefined, "telemetry.sdk.language");
-  const cloudProviders = extractValues(cloudProvidersData?.records as Record<string, unknown>[] | undefined, "cloud.provider");
+  const serviceNames = extractValues(servicesData?.records as Record<string, unknown>[] | undefined, "entity.name");
+  const clusters = extractValues(clustersData?.records as Record<string, unknown>[] | undefined, "k8s_cluster");
+  const namespaces = extractValues(namespacesData?.records as Record<string, unknown>[] | undefined, "k8s_namespace");
+  const workloads = extractValues(workloadsData?.records as Record<string, unknown>[] | undefined, "k8s_workload");
   const tags = extractValues(tagsData?.records as Record<string, unknown>[] | undefined, "tag");
 
   const handleTimeframeChange = (value: Timeframe | null) => {
@@ -186,7 +179,12 @@ ${limitClause}`,
       {/* Debug info */}
       {servicesError && (
         <Text style={{ color: "red", fontSize: 12 }}>
-          Query error: {servicesError.message}
+          Services query error: {servicesError.message}
+        </Text>
+      )}
+      {clustersError && (
+        <Text style={{ color: "red", fontSize: 12 }}>
+          Clusters query error: {clustersError.message}
         </Text>
       )}
       {servicesLoading && (
@@ -194,7 +192,7 @@ ${limitClause}`,
       )}
       {!servicesLoading && serviceNames.length > 0 && (
         <Text style={{ fontSize: 12, color: "green" }}>
-          Found {serviceNames.length} services in the selected timeframe
+          Found {serviceNames.length} services, {clusters.length} clusters, {namespaces.length} namespaces
         </Text>
       )}
       
@@ -232,12 +230,14 @@ ${limitClause}`,
                 k8sCluster: value as string | null,
                 k8sNamespace: null,
                 k8sWorkload: null,
+                serviceTags: [],
               })
             }
             clearable
             placeholder={clusters.length > 0 ? "All clusters" : "No clusters found"}
           >
             <SelectContent>
+              <SelectFilter />
               {clusters.length > 0 && <SelectOption value="">All clusters</SelectOption>}
               {clusters.map((cluster) => (
                 <SelectOption key={cluster} value={cluster}>
@@ -257,12 +257,14 @@ ${limitClause}`,
                 ...filters,
                 k8sNamespace: value as string | null,
                 k8sWorkload: null,
+                serviceTags: [],
               })
             }
             clearable
             placeholder={namespaces.length > 0 ? "All namespaces" : "No namespaces found"}
           >
             <SelectContent>
+              <SelectFilter />
               {namespaces.length > 0 && <SelectOption value="">All namespaces</SelectOption>}
               {namespaces.map((ns) => (
                 <SelectOption key={ns} value={ns}>
@@ -287,58 +289,11 @@ ${limitClause}`,
             placeholder={workloads.length > 0 ? "All workloads" : "No workloads found"}
           >
             <SelectContent>
+              <SelectFilter />
               {workloads.length > 0 && <SelectOption value="">All workloads</SelectOption>}
               {workloads.map((wl) => (
                 <SelectOption key={wl} value={wl}>
                   {wl}
-                </SelectOption>
-              ))}
-            </SelectContent>
-          </Select>
-        </Flex>
-
-        <Flex flexDirection="column" gap={4}>
-          <Label>{getLabel("Technology", technologies.length, false)}</Label>
-          <Select
-            value={filters.technology}
-            onChange={(value) =>
-              onFilterChange({
-                ...filters,
-                technology: value as string | null,
-              })
-            }
-            clearable
-            placeholder={technologies.length > 0 ? "All technologies" : "No technologies found"}
-          >
-            <SelectContent>
-              {technologies.length > 0 && <SelectOption value="">All technologies</SelectOption>}
-              {technologies.map((tech) => (
-                <SelectOption key={tech} value={tech}>
-                  {tech}
-                </SelectOption>
-              ))}
-            </SelectContent>
-          </Select>
-        </Flex>
-
-        <Flex flexDirection="column" gap={4}>
-          <Label>{getLabel("Cloud Provider", cloudProviders.length, false)}</Label>
-          <Select
-            value={filters.cloudProvider}
-            onChange={(value) =>
-              onFilterChange({
-                ...filters,
-                cloudProvider: value as string | null,
-              })
-            }
-            clearable
-            placeholder={cloudProviders.length > 0 ? "All providers" : "No providers found"}
-          >
-            <SelectContent>
-              {cloudProviders.length > 0 && <SelectOption value="">All providers</SelectOption>}
-              {cloudProviders.map((cp) => (
-                <SelectOption key={cp} value={cp}>
-                  {cp}
                 </SelectOption>
               ))}
             </SelectContent>
@@ -360,6 +315,7 @@ ${limitClause}`,
             multiple
           >
             <SelectContent>
+              <SelectFilter />
               {tags.map((tag) => (
                 <SelectOption key={tag} value={tag}>
                   {tag}

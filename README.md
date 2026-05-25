@@ -5,6 +5,9 @@ A Dynatrace App that visualizes trace flows through services using interactive S
 ## Features
 
 - **Sankey Flow Diagram**: Visualize how traces flow through your services with an interactive tree diagram showing call percentages and trace counts
+- **Service & Endpoint Views**: Toggle between service-level and endpoint-level visualization to see call patterns at different granularities
+- **Node Filtering**: Filter the diagram to highlight specific services or endpoints, making it easy to trace paths through complex architectures
+- **Zoom Controls**: Zoom in/out (30%-200%) for detailed inspection or overview of large flow diagrams
 - **Service Filtering**: Filter services by:
   - Kubernetes cluster, namespace, and workload
   - Technology/SDK language (Node.js, Python, Go, Java, etc.)
@@ -27,6 +30,11 @@ Filter and browse services with advanced filtering options for Kubernetes, techn
 Interactive Sankey-style visualization showing how traces flow through services with call percentages.
 
 ![Trace Flow Diagram](docs/images/trace-flow-diagram.png)
+
+### Endpoint View & Filtering
+Switch to endpoint-level view for granular analysis and use the filter dropdown to highlight specific services or endpoints in the diagram.
+
+![Endpoint View and Filtering](docs/images/endpoint-view-and-filtering.png)
 
 ### Trace List
 View all traces for a selected path with timestamp, duration, status, and direct links to Distributed Tracing.

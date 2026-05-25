@@ -3,13 +3,14 @@
   "environmentUrl": "https://guu84124.apps.dynatrace.com/",
   "app": {
     "name": "Traces Flow",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "description": "Visualize trace flows through services with Sankey diagrams",
     "id": "my.traces.flow",
     "scopes": [
       { "name": "storage:buckets:read", "comment": "default template" },
       { "name": "storage:spans:read", "comment": "Read distributed traces" },
-      { "name": "storage:entities:read", "comment": "Read entities" }
+      { "name": "storage:entities:read", "comment": "Read entities" },
+      { "name": "storage:smartscape:read", "comment": "Read Smartscape topology nodes and edges" }
     ]
   }
 }
