@@ -148,7 +148,6 @@ ${filterConditions.join("\n")}
           columns={columns}
           sortable
           fullWidth
-          variant="default"
         >
           <DataTable.Pagination defaultPageSize={10} />
         </DataTable>

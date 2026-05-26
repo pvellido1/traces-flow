@@ -1,6 +1,6 @@
 {
   "$schema": "./.dt-app/app.config.schema.json",
-  "environmentUrl": "https://guu84124.apps.dynatrace.com/",
+  "environmentUrl": "https://apmgisspro.apps.dynatrace.com/",
   "app": {
     "name": "Traces Flow",
     "version": "0.3.0",

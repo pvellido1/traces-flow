@@ -234,7 +234,6 @@ ${tagsClusterFilter}
               })
             }
             clearable
-            placeholder={clusters.length > 0 ? "All clusters" : "No clusters found"}
           >
             <SelectContent>
               <SelectFilter />
@@ -261,7 +260,6 @@ ${tagsClusterFilter}
               })
             }
             clearable
-            placeholder={namespaces.length > 0 ? "All namespaces" : "No namespaces found"}
           >
             <SelectContent>
               <SelectFilter />
@@ -286,7 +284,6 @@ ${tagsClusterFilter}
               })
             }
             clearable
-            placeholder={workloads.length > 0 ? "All workloads" : "No workloads found"}
           >
             <SelectContent>
               <SelectFilter />
@@ -311,7 +308,6 @@ ${tagsClusterFilter}
               })
             }
             clearable
-            placeholder={tags.length > 0 ? "Select tags" : "No tags found"}
             multiple
           >
             <SelectContent>

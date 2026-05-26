@@ -291,9 +291,9 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
       header: "Timestamp",
       accessor: "startTime",
       cell: ({ value }) => {
-        if (!value) return "-";
+        if (!value) return <Text>-</Text>;
         const date = new Date(value);
-        return date.toLocaleString();
+        return <Text>{date.toLocaleString()}</Text>;
       },
     },
     {
@@ -301,11 +301,11 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
       header: "Duration",
       accessor: "duration",
       cell: ({ value }) => {
-        if (!value) return "-";
+        if (!value) return <Text>-</Text>;
         const ms = value / 1_000_000; // nanoseconds to ms
-        if (ms < 1) return `${(ms * 1000).toFixed(0)} µs`;
-        if (ms < 1000) return `${ms.toFixed(2)} ms`;
-        return `${(ms / 1000).toFixed(2)} s`;
+        if (ms < 1) return <Text>{`${(ms * 1000).toFixed(0)} µs`}</Text>;
+        if (ms < 1000) return <Text>{`${ms.toFixed(2)} ms`}</Text>;
+        return <Text>{`${(ms / 1000).toFixed(2)} s`}</Text>;
       },
     },
     {
@@ -366,7 +366,6 @@ export const TracesTable: React.FC<TracesTableProps> = ({ path, filters, rootSer
           columns={columns}
           sortable
           fullWidth
-          variant="default"
         >
           <DataTable.Pagination defaultPageSize={10} />
         </DataTable>
