@@ -1,6 +1,6 @@
 {
   "name": "traces-flow",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Search traces for specific services and flows",
   "scripts": {
     "build": "dt-app build",

@@ -144,7 +144,7 @@ export const TracesFlowDiagram: React.FC<TracesFlowDiagramProps> = ({
 | filter isNotNull(trace.id)
 | lookup [
     fetch spans${timeframeClause}
-    | filter dt.smartscape.service == "${service.serviceId}"
+    | filter dt.smartscape.service == toSmartscapeId("${service.serviceId}")
     | summarize count(), by: {trace.id}
     | limit ${maxTraces}
   ], sourceField: trace.id, lookupField: trace.id, prefix: "match_"
